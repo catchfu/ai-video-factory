@@ -1,0 +1,5 @@
+{
+  "name": "AI Video Generation System",
+  "description": "An AI-powered system to automatically create short videos from text prompts, complete with voiceovers and subtitles. Features include image editing, batch generation, video history, and platform upload integration placeholders.",
+  "requestFramePermissions": []
+}
