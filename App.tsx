@@ -1,22 +1,29 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Video, Image, FileText, Settings, Film } from 'lucide-react';
+import { Video, Image, FileText, Settings as SettingsIcon, Film } from 'lucide-react';
 import { VideoGenerator } from './components/VideoGenerator';
 import { ImageEditor } from './components/ImageEditor';
 import { VideoHistory } from './components/VideoHistory';
 import { ApiKeySelector } from './components/ApiKeySelector';
-import type { HistoryItem, Tab } from './types';
+import { SettingsComponent } from './components/Settings';
+import type { HistoryItem, SubtitleSettings, Tab } from './types';
 
 const TABS: { id: Tab; name: string; icon: React.FC<React.SVGProps<SVGSVGElement>> }[] = [
   { id: 'video', name: 'Video Generator', icon: Film },
   { id: 'image', name: 'Image Editor', icon: Image },
   { id: 'history', name: 'Video History', icon: Video },
+  { id: 'settings', name: 'Settings', icon: SettingsIcon },
 ];
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('video');
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isApiKeySelected, setIsApiKeySelected] = useState(false);
+  const [subtitleSettings, setSubtitleSettings] = useState<SubtitleSettings>({
+    enabled: true,
+    textColor: '#FFFFFF',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+  });
 
   useEffect(() => {
     try {
@@ -24,8 +31,12 @@ const App: React.FC = () => {
       if (storedHistory) {
         setHistory(JSON.parse(storedHistory));
       }
+      const storedSettings = localStorage.getItem('subtitleSettings');
+      if (storedSettings) {
+        setSubtitleSettings(JSON.parse(storedSettings));
+      }
     } catch (error) {
-      console.error("Failed to load history from localStorage:", error);
+      console.error("Failed to load data from localStorage:", error);
     }
   }, []);
 
@@ -37,6 +48,32 @@ const App: React.FC = () => {
       console.error("Failed to save history to localStorage:", error);
     }
   };
+
+  const updateSubtitleSettings = (newSettings: SubtitleSettings) => {
+    try {
+      localStorage.setItem('subtitleSettings', JSON.stringify(newSettings));
+      setSubtitleSettings(newSettings);
+    } catch (error) {
+      console.error("Failed to save subtitle settings to localStorage:", error);
+    }
+  };
+
+  useEffect(() => {
+    const styleId = 'custom-subtitle-styles';
+    let styleElement = document.getElementById(styleId);
+    if (!styleElement) {
+      styleElement = document.createElement('style');
+      styleElement.id = styleId;
+      document.head.appendChild(styleElement);
+    }
+    styleElement.innerHTML = `
+      ::cue {
+        color: ${subtitleSettings.textColor} !important;
+        background-color: ${subtitleSettings.backgroundColor} !important;
+        /* Additional styles for better readability might go here */
+      }
+    `;
+  }, [subtitleSettings.textColor, subtitleSettings.backgroundColor]);
 
   const addVideoToHistory = (item: HistoryItem) => {
     setHistory(prev => {
@@ -51,7 +88,6 @@ const App: React.FC = () => {
       const hasKey = await window.aistudio.hasSelectedApiKey();
       setIsApiKeySelected(hasKey);
     } else {
-      // Fallback for environments where aistudio is not available
       console.warn('aistudio API not found. Assuming API key is set via environment variable.');
       setIsApiKeySelected(true);
     }
@@ -64,11 +100,13 @@ const App: React.FC = () => {
   const renderContent = () => {
     switch (activeTab) {
       case 'video':
-        return isApiKeySelected ? <VideoGenerator addVideoToHistory={addVideoToHistory} /> : <ApiKeySelector onKeySelected={checkApiKey} />;
+        return isApiKeySelected ? <VideoGenerator addVideoToHistory={addVideoToHistory} subtitleSettings={subtitleSettings} /> : <ApiKeySelector onKeySelected={checkApiKey} />;
       case 'image':
         return <ImageEditor />;
       case 'history':
-        return <VideoHistory history={history} setHistory={updateHistory} />;
+        return <VideoHistory history={history} setHistory={updateHistory} subtitleSettings={subtitleSettings} />;
+      case 'settings':
+        return <SettingsComponent settings={subtitleSettings} onSettingsChange={updateSubtitleSettings} />;
       default:
         return null;
     }
@@ -80,7 +118,7 @@ const App: React.FC = () => {
         <nav className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center">
-              <Settings className="h-8 w-8 text-primary animate-spin-slow" />
+              <SettingsIcon className="h-8 w-8 text-primary animate-spin-slow" />
               <h1 className="ml-3 text-2xl font-bold text-on-surface">AI Video Factory</h1>
             </div>
             <div className="hidden md:block">
