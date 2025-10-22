@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Search, Trash2, Youtube, Download, Share2, FileAudio, Subtitles } from 'lucide-react';
 import type { HistoryItem, AspectRatio, SubtitleSettings } from '../types';
@@ -10,11 +9,10 @@ interface VideoHistoryProps {
   subtitleSettings: SubtitleSettings;
 }
 
-const SocialIcon: React.FC<{ platform: 'YouTube' | 'TikTok' | 'Douyin' }> = ({ platform }) => {
+const SocialIcon: React.FC<{ platform: 'YouTube' | 'TikTok' }> = ({ platform }) => {
     const commonClasses = "w-6 h-6";
     if (platform === 'YouTube') return <Youtube className={`${commonClasses} text-red-500`} />;
-    if (platform === 'TikTok') return <svg className={commonClasses} fill="currentColor" viewBox="0 0 24 24"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 0 .17.02.25.04.54.14.94.52 1.1 1.02.12.37.18.76.18 1.14s-.06.77-.18 1.14c-.16.5-.56.88-1.1 1.02-.08.02-.17.04-.25.04-1.3.01-2.6.02-3.91.02s-2.61.01-3.91-.02c-.08 0-.17-.02-.25-.04-.54-.14-.94-.52-1.1-1.02-.12-.37-.18-.76-.18-1.14s.06-.77.18-1.14c.16-.5.56.88 1.1-1.02.08-.02.17-.04.25-.04 1.3-.01 2.6-.02 3.91-.02zM12 4.19c-3.34 0-6.05 2.72-6.05 6.05s2.72 6.05 6.05 6.05 6.05-2.72 6.05-6.05-2.72-6.05-6.05-6.05zm0 10.1c-2.22 0-4.02-1.8-4.02-4.02s1.8-4.02 4.02-4.02 4.02 1.8 4.02 4.02-1.8 4.02-4.02 4.02z"/></svg>;
-    if (platform === 'Douyin') return <svg className={commonClasses} fill="currentColor" viewBox="0 0 24 24"><path d="M16.63,8.41a4.2,4.2,0,0,1-4.18,4.2,4.2,4.2,0,0,1-4.2-4.2,4.2,4.2,0,0,1,4.2-4.2,4.1,4.1,0,0,1,2.83,1l-1.4,1.4a2.15,2.15,0,0,0-1.43-.53,2.1,2.1,0,1,0,0,4.2,2.1,2.1,0,0,0,2.1-2.1H12.45V8.41h4.18Z"/></svg>;
+    if (platform === 'TikTok') return <svg className={commonClasses} fill="currentColor" viewBox="0 0 24 24"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 0 .17.02.25.04.54.14.94.52 1.1 1.02.12.37.18.76.18 1.14s-.06.77-.18 1.14c-.16.5-.56.88-1.1 1.02-.08.02-.17.04-.25.04-1.3.01-2.6.02-3.91.02s-2.61.01-3.91-.02c-.08 0-.17-.02-.25-.04-.54-.14-.94-.52-1.1-1.02-.12-.37-.18.76-.18-1.14s.06-.77.18-1.14c.16-.5.56.88 1.1-1.02.08-.02.17-.04.25-.04 1.3-.01 2.6-.02 3.91-.02zM12 4.19c-3.34 0-6.05 2.72-6.05 6.05s2.72 6.05 6.05 6.05 6.05-2.72 6.05-6.05-2.72-6.05-6.05-6.05zm0 10.1c-2.22 0-4.02-1.8-4.02-4.02s1.8-4.02 4.02-4.02 4.02 1.8 4.02 4.02-1.8 4.02-4.02 4.02z"/></svg>;
     return null;
 }
 
@@ -40,8 +38,26 @@ const VideoCard: React.FC<{ item: HistoryItem; onDelete: (id: string) => void; s
         }
     }, [subtitleSettings.enabled, item.vttUrl]);
 
-    const handleSocialClick = (platform: string) => {
-        alert(`${platform} upload coming soon!`);
+    const handleShare = async () => {
+        const shareData = {
+            title: 'AI Generated Video',
+            text: `Check out this video I generated about: "${item.prompt}"`,
+            url: window.location.href, // Using app URL as blob URLs can't be shared
+        };
+        try {
+            if (navigator.share && navigator.canShare(shareData)) {
+                await navigator.share(shareData);
+            } else {
+                // Fallback for browsers that don't support Web Share API
+                await navigator.clipboard.writeText(`${shareData.text} ${shareData.url}`);
+                alert('Sharing not supported. Link and prompt copied to clipboard!');
+            }
+        } catch (error) {
+            console.error('Error sharing:', error);
+            // Do not alert on user cancellation (AbortError)
+            if (String(error).includes('AbortError')) return;
+            alert('Could not share. Please try again.');
+        }
     };
 
     const syncPlay = () => audioRef.current?.play().catch(e => console.error("Audio play failed", e));
@@ -96,9 +112,9 @@ const VideoCard: React.FC<{ item: HistoryItem; onDelete: (id: string) => void; s
                 </div>
                 <div className="flex items-center justify-between pt-2 border-t border-gray-700">
                     <div className="flex space-x-3">
-                        <button onClick={() => handleSocialClick('YouTube')} className="text-gray-400 hover:text-white" title="Upload to YouTube"><SocialIcon platform="YouTube"/></button>
-                        <button onClick={() => handleSocialClick('TikTok')} className="text-gray-400 hover:text-white" title="Upload to TikTok"><SocialIcon platform="TikTok"/></button>
-                        <button onClick={() => handleSocialClick('Douyin')} className="text-gray-400 hover:text-white" title="Upload to Douyin"><SocialIcon platform="Douyin"/></button>
+                        <a href="https://www.youtube.com/upload" target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-white" title="Upload to YouTube"><SocialIcon platform="YouTube"/></a>
+                        <a href="https://www.tiktok.com/upload" target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-white" title="Upload to TikTok"><SocialIcon platform="TikTok"/></a>
+                        <button onClick={handleShare} className="text-gray-400 hover:text-white" title="Share"><Share2 className="w-6 h-6" /></button>
                     </div>
                      <div className="flex space-x-2">
                         <a href={item.videoUrl} download={`video_${item.id}.mp4`} className="text-gray-400 hover:text-white" title="Download Video"><Download className="w-5 h-5" /></a>

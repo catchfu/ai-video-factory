@@ -1,5 +1,5 @@
 import { GoogleGenAI, Modality } from "@google/genai";
-import type { AspectRatio, TTSVoice } from '../types';
+import type { AspectRatio, GenerationLanguage, TTSVoice } from '../types';
 import { decode, createWavBlob } from '../utils/helpers';
 
 
@@ -14,20 +14,70 @@ declare global {
 const getAiClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 /**
+ * Finds a stock video from Pexels or Pixabay based on a prompt.
+ */
+const findStockVideo = async (
+  prompt: string, 
+  pexelsApiKey?: string, 
+  pixabayApiKey?: string
+): Promise<string | null> => {
+    const ai = getAiClient();
+    try {
+        const keywordsResponse = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: `Extract the 2-3 most relevant keywords from this prompt for a video search. Return them as a single, URL-encoded string (e.g., "futuristic%20city%20neon").\n\nPROMPT: "${prompt}"`,
+        });
+        const query = keywordsResponse.text.trim();
+
+        if (pexelsApiKey) {
+            const pexelsUrl = `https://api.pexels.com/videos/search?query=${query}&per_page=1&orientation=portrait`;
+            const pexelsResponse = await fetch(pexelsUrl, { headers: { 'Authorization': pexelsApiKey } });
+            if (pexelsResponse.ok) {
+                const pexelsData = await pexelsResponse.json();
+                const video = pexelsData.videos?.[0];
+                if (video) {
+                    // Find a suitable MP4 file, preferably lower resolution for faster processing
+                    const videoFile = video.video_files.find((f: any) => f.quality === 'sd' && f.file_type === 'video/mp4') 
+                                   || video.video_files.find((f: any) => f.file_type === 'video/mp4');
+                    if (videoFile) return videoFile.link;
+                }
+            }
+        }
+
+        if (pixabayApiKey) {
+            const pixabayUrl = `https://pixabay.com/api/videos/?key=${pixabayApiKey}&q=${query}&per_page=3&orientation=vertical`;
+            const pixabayResponse = await fetch(pixabayUrl);
+            if (pixabayResponse.ok) {
+                const pixabayData = await pixabayResponse.json();
+                const video = pixabayData.hits?.[0];
+                // Find a suitable MP4 file, preferring medium quality
+                if (video?.videos?.medium?.url) return video.videos.medium.url;
+            }
+        }
+    } catch (error) {
+        console.error("Error finding stock video:", error);
+    }
+    return null;
+};
+
+
+/**
  * Generates a script, voiceover, and subtitles for a video.
  */
 const generateNarration = async (
   prompt: string,
   duration: number,
   voice: TTSVoice,
+  language: GenerationLanguage,
   onProgress: (message: string) => void,
 ): Promise<{ audioBlob: Blob; vttContent: string }> => {
     const ai = getAiClient();
+    const scriptLanguage = language === 'zh' ? 'Mandarin Chinese' : 'English';
 
     onProgress('Generating script...');
     const scriptResponse = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
-        contents: `Create a short, engaging voiceover script of about ${duration} seconds for a video about: "${prompt}". The script should be concise, direct, and engaging for viewers.`,
+        contents: `Create a short, engaging voiceover script in ${scriptLanguage} for a video about: "${prompt}". The script should take approximately ${duration} seconds to read aloud at a natural pace.`,
     });
     const script = scriptResponse.text;
 
@@ -54,9 +104,7 @@ const generateNarration = async (
     if (!base64Audio) throw new Error("TTS generation failed.");
     
     const pcmDataBytes = decode(base64Audio);
-    // The audio data is 16-bit PCM, so create an Int16Array view on the buffer
     const pcmDataInt16 = new Int16Array(pcmDataBytes.buffer);
-    // The TTS model sample rate is 24kHz, and it's mono (1 channel)
     const audioBlob = createWavBlob(pcmDataInt16, 24000, 1);
 
     return { audioBlob, vttContent };
@@ -65,18 +113,14 @@ const generateNarration = async (
 
 /**
  * Generates a video using the Veo model or a no-cost fallback.
- * @param prompt The text prompt for the video.
- * @param duration The desired duration of the video.
- * @param aspectRatio The aspect ratio of the video.
- * @param voice The selected TTS voice for the voiceover.
- * @param onProgress Callback function to report progress.
- * @returns An object containing the video blob and optional audio/VTT for fallbacks.
  */
 export const generateVideo = async (
   prompt: string,
   duration: number,
   aspectRatio: AspectRatio,
   voice: TTSVoice,
+  language: GenerationLanguage,
+  apiKeys: { pexelsApiKey: string, pixabayApiKey: string },
   onProgress: (message: string) => void,
 ): Promise<{ videoBlob: Blob; audioBlob?: Blob; vttContent?: string; isFallback: boolean; }> => {
   const ai = getAiClient();
@@ -122,7 +166,7 @@ export const generateVideo = async (
     const videoBlob = await response.blob();
     
     if (voice !== 'none') {
-        const narration = await generateNarration(prompt, duration, voice, onProgress);
+        const narration = await generateNarration(prompt, duration, voice, language, onProgress);
         audioBlob = narration.audioBlob;
         vttContent = narration.vttContent;
     }
@@ -133,19 +177,22 @@ export const generateVideo = async (
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
 
-    if (errorMessage.toLowerCase().includes('quota')) {
-        onProgress('Quota limit reached. Generating no-cost fallback...');
+    if (errorMessage.toLowerCase().includes('quota') || errorMessage.toLowerCase().includes('billing')) {
+        onProgress('Quota limit reached. Searching for stock footage...');
         
+        const stockVideoUrl = await findStockVideo(prompt, apiKeys.pexelsApiKey, apiKeys.pixabayApiKey);
+
         if (voice !== 'none') {
-            const narration = await generateNarration(prompt, duration, voice, onProgress);
+            const narration = await generateNarration(prompt, duration, voice, language, onProgress);
             audioBlob = narration.audioBlob;
             vttContent = narration.vttContent;
         }
 
-        onProgress('Fetching stock footage...');
-        const sampleVideoUrl = 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4';
-        const response = await fetch(sampleVideoUrl);
-        if (!response.ok) throw new Error('Failed to load sample video.');
+        const videoUrlToFetch = stockVideoUrl || 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4';
+        onProgress(stockVideoUrl ? 'Fetching footage from Pexels/Pixabay...' : 'Fetching generic fallback...');
+        
+        const response = await fetch(videoUrlToFetch);
+        if (!response.ok) throw new Error(`Failed to load fallback video from ${videoUrlToFetch}.`);
         const videoBlob = await response.blob();
 
         onProgress('Fallback video compiled successfully!');
@@ -163,10 +210,6 @@ export const generateVideo = async (
 
 /**
  * Edits an image based on a text prompt.
- * @param base64Image The base64 encoded string of the source image.
- * @param mimeType The MIME type of the source image.
- * @param prompt The text prompt for the edit.
- * @returns A base64 encoded string of the edited image.
  */
 export const editImage = async (base64Image: string, mimeType: string, prompt: string): Promise<string> => {
     if (!process.env.API_KEY) {

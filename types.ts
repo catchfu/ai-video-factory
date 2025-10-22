@@ -1,9 +1,10 @@
-
 export type Tab = 'video' | 'image' | 'history' | 'settings';
 
 export type AspectRatio = '16:9' | '9:16' | '1:1' | '4:3' | '3:4';
 
 export type TTSVoice = 'none' | 'Kore' | 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr';
+
+export type GenerationLanguage = 'en' | 'zh';
 
 export interface HistoryItem {
   id: string;
@@ -18,6 +19,7 @@ export interface HistoryItem {
   aspectRatio: AspectRatio;
   status: 'completed' | 'failed';
   voice: TTSVoice;
+  language: GenerationLanguage;
 }
 
 export interface GenerationTask {
@@ -26,6 +28,7 @@ export interface GenerationTask {
     duration: number;
     aspectRatio: AspectRatio;
     voice: TTSVoice;
+    language: GenerationLanguage;
     status: 'pending' | 'generating' | 'success' | 'error';
     progressMessage: string;
     result?: {
@@ -41,4 +44,10 @@ export interface SubtitleSettings {
   enabled: boolean;
   textColor: string;
   backgroundColor: string;
+}
+
+export interface AppSettings {
+  subtitles: SubtitleSettings;
+  pexelsApiKey: string;
+  pixabayApiKey: string;
 }

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { Video, Image, FileText, Settings as SettingsIcon, Film } from 'lucide-react';
 import { VideoGenerator } from './components/VideoGenerator';
@@ -6,7 +5,7 @@ import { ImageEditor } from './components/ImageEditor';
 import { VideoHistory } from './components/VideoHistory';
 import { ApiKeySelector } from './components/ApiKeySelector';
 import { SettingsComponent } from './components/Settings';
-import type { HistoryItem, SubtitleSettings, Tab } from './types';
+import type { HistoryItem, AppSettings, Tab } from './types';
 
 const TABS: { id: Tab; name: string; icon: React.FC<React.SVGProps<SVGSVGElement>> }[] = [
   { id: 'video', name: 'Video Generator', icon: Film },
@@ -19,24 +18,44 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('video');
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isApiKeySelected, setIsApiKeySelected] = useState(false);
-  const [subtitleSettings, setSubtitleSettings] = useState<SubtitleSettings>({
-    enabled: true,
-    textColor: '#FFFFFF',
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+  const [settings, setSettings] = useState<AppSettings>({
+    subtitles: {
+      enabled: true,
+      textColor: '#FFFFFF',
+      backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    },
+    pexelsApiKey: '',
+    pixabayApiKey: '',
   });
 
   useEffect(() => {
+    // Load history from localStorage
     try {
       const storedHistory = localStorage.getItem('videoHistory');
       if (storedHistory) {
         setHistory(JSON.parse(storedHistory));
       }
-      const storedSettings = localStorage.getItem('subtitleSettings');
-      if (storedSettings) {
-        setSubtitleSettings(JSON.parse(storedSettings));
+    } catch (error) {
+      console.error("Failed to load history from localStorage:", error);
+    }
+    
+    // Load settings from localStorage
+    try {
+      const storedSettingsJSON = localStorage.getItem('appSettings');
+      if (storedSettingsJSON) {
+        const storedSettings = JSON.parse(storedSettingsJSON);
+        // Use a functional update to safely merge stored settings with defaults
+        setSettings(prevSettings => ({
+          ...prevSettings,
+          ...storedSettings,
+          subtitles: {
+            ...prevSettings.subtitles,
+            ...(storedSettings.subtitles || {}),
+          },
+        }));
       }
     } catch (error) {
-      console.error("Failed to load data from localStorage:", error);
+      console.error("Failed to load and parse settings from localStorage:", error);
     }
   }, []);
 
@@ -49,14 +68,14 @@ const App: React.FC = () => {
     }
   };
 
-  const updateSubtitleSettings = (newSettings: SubtitleSettings) => {
+  const updateSettings = useCallback((newSettings: AppSettings) => {
     try {
-      localStorage.setItem('subtitleSettings', JSON.stringify(newSettings));
-      setSubtitleSettings(newSettings);
+      setSettings(newSettings);
+      localStorage.setItem('appSettings', JSON.stringify(newSettings));
     } catch (error) {
-      console.error("Failed to save subtitle settings to localStorage:", error);
+      console.error("Failed to save settings to localStorage:", error);
     }
-  };
+  }, []);
 
   useEffect(() => {
     const styleId = 'custom-subtitle-styles';
@@ -68,12 +87,12 @@ const App: React.FC = () => {
     }
     styleElement.innerHTML = `
       ::cue {
-        color: ${subtitleSettings.textColor} !important;
-        background-color: ${subtitleSettings.backgroundColor} !important;
+        color: ${settings.subtitles.textColor} !important;
+        background-color: ${settings.subtitles.backgroundColor} !important;
         /* Additional styles for better readability might go here */
       }
     `;
-  }, [subtitleSettings.textColor, subtitleSettings.backgroundColor]);
+  }, [settings.subtitles.textColor, settings.subtitles.backgroundColor]);
 
   const addVideoToHistory = (item: HistoryItem) => {
     setHistory(prev => {
@@ -100,13 +119,13 @@ const App: React.FC = () => {
   const renderContent = () => {
     switch (activeTab) {
       case 'video':
-        return isApiKeySelected ? <VideoGenerator addVideoToHistory={addVideoToHistory} subtitleSettings={subtitleSettings} /> : <ApiKeySelector onKeySelected={checkApiKey} />;
+        return isApiKeySelected ? <VideoGenerator addVideoToHistory={addVideoToHistory} settings={settings} /> : <ApiKeySelector onKeySelected={checkApiKey} />;
       case 'image':
         return <ImageEditor />;
       case 'history':
-        return <VideoHistory history={history} setHistory={updateHistory} subtitleSettings={subtitleSettings} />;
+        return <VideoHistory history={history} setHistory={updateHistory} subtitleSettings={settings.subtitles} />;
       case 'settings':
-        return <SettingsComponent settings={subtitleSettings} onSettingsChange={updateSubtitleSettings} />;
+        return <SettingsComponent settings={settings} onSettingsChange={updateSettings} />;
       default:
         return null;
     }
