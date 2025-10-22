@@ -1,4 +1,4 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 import type { AspectRatio, GenerationLanguage, TTSVoice } from '../types';
 import { decode, createWavBlob } from '../utils/helpers';
 
@@ -12,6 +12,24 @@ declare global {
 
 // Helper to get a fresh AI client instance
 const getAiClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+/**
+ * Generates a script from a prompt.
+ */
+export const generateScript = async (
+  prompt: string,
+  duration: number,
+  language: GenerationLanguage
+): Promise<string> => {
+    const ai = getAiClient();
+    const scriptLanguage = language === 'zh' ? 'Mandarin Chinese' : 'English';
+    const scriptResponse = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: `Create a short, engaging voiceover script in ${scriptLanguage} for a video about: "${prompt}". The script should take approximately ${duration} seconds to read aloud at a natural pace. Return only the script text, without any labels, titles, or markdown formatting.`,
+    });
+    return scriptResponse.text.trim();
+};
+
 
 /**
  * Finds a stock video from Pexels or Pixabay based on a prompt.
@@ -62,25 +80,16 @@ const findStockVideo = async (
 
 
 /**
- * Generates a script, voiceover, and subtitles for a video.
+ * Generates voiceover and subtitles from a given script.
  */
-const generateNarration = async (
-  prompt: string,
+const generateNarrationFromScript = async (
+  script: string,
   duration: number,
   voice: TTSVoice,
   language: GenerationLanguage,
   onProgress: (message: string) => void,
 ): Promise<{ audioBlob: Blob; vttContent: string }> => {
     const ai = getAiClient();
-    const scriptLanguage = language === 'zh' ? 'Mandarin Chinese' : 'English';
-
-    onProgress('Generating script...');
-    const scriptResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: `Create a short, engaging voiceover script in ${scriptLanguage} for a video about: "${prompt}". The script should take approximately ${duration} seconds to read aloud at a natural pace.`,
-    });
-    const script = scriptResponse.text;
-
     onProgress('Generating subtitles...');
     const vttResponse = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
@@ -110,23 +119,102 @@ const generateNarration = async (
     return { audioBlob, vttContent };
 };
 
+const generateScenesFromScript = async (script: string, duration: number): Promise<{ scenes: { scene_description: string; narration: string }[] }> => {
+    const ai = getAiClient();
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: `
+          You are a creative video director. Based on the following script for a video that is approximately ${duration} seconds long, break it down into a series of distinct scenes.
+          For each scene, provide a concise visual description (for finding stock footage) and identify the corresponding narration for that scene.
+          SCRIPT: "${script}"
+          Return the output as a valid JSON object with a single key "scenes". "scenes" should be an array of objects, where each object has two keys: "scene_description" and "narration".
+          Ensure the "narration" parts, when combined, exactly match the original script.
+        `,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              scenes: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    scene_description: { type: Type.STRING, description: 'A visual description of the scene for a stock video search.' },
+                    narration: { type: Type.STRING, description: 'The voiceover script for this specific scene.' },
+                  },
+                  required: ['scene_description', 'narration'],
+                }
+              }
+            },
+            required: ['scenes'],
+          }
+        }
+    });
+    const parsed = JSON.parse(response.text);
+    return { scenes: parsed.scenes };
+};
+
+const generateMultiClipFallback = async (
+    script: string,
+    duration: number,
+    voice: TTSVoice,
+    language: GenerationLanguage,
+    apiKeys: { pexelsApiKey: string; pixabayApiKey: string },
+    onProgress: (message: string) => void
+) => {
+    onProgress('Breaking script into scenes...');
+    const { scenes } = await generateScenesFromScript(script, duration);
+
+    let audioBlob: Blob | undefined;
+    let vttContent: string | undefined;
+
+    if (voice !== 'none') {
+        const narration = await generateNarrationFromScript(script, duration, voice, language, onProgress);
+        audioBlob = narration.audioBlob;
+        vttContent = narration.vttContent;
+    }
+
+    onProgress(`Searching for ${scenes.length} video clips...`);
+    const videoUrlPromises = scenes.map(scene => findStockVideo(scene.scene_description, apiKeys.pexelsApiKey, apiKeys.pixabayApiKey));
+    const resolvedVideoUrls = await Promise.all(videoUrlPromises);
+    
+    const genericFallback = 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4';
+    const videoUrls = resolvedVideoUrls.map(url => url || genericFallback);
+
+    onProgress('Multi-clip video compiled!');
+    return { videoUrls, audioBlob, vttContent, isFallback: true, isStitched: true };
+};
+
 
 /**
  * Generates a video using the Veo model or a no-cost fallback.
  */
 export const generateVideo = async (
   prompt: string,
+  script: string,
   duration: number,
   aspectRatio: AspectRatio,
   voice: TTSVoice,
   language: GenerationLanguage,
   apiKeys: { pexelsApiKey: string, pixabayApiKey: string },
   onProgress: (message: string) => void,
-): Promise<{ videoBlob: Blob; audioBlob?: Blob; vttContent?: string; isFallback: boolean; }> => {
+): Promise<{ 
+    videoBlob?: Blob; 
+    videoUrls?: string[];
+    isStitched?: boolean;
+    audioBlob?: Blob; 
+    vttContent?: string; 
+    isFallback: boolean; 
+}> => {
   const ai = getAiClient();
   onProgress('Initializing video generation...');
-  let audioBlob: Blob | undefined;
-  let vttContent: string | undefined;
+  
+  let finalScript = script;
+  if (!finalScript && voice !== 'none') {
+      onProgress('Generating script...');
+      finalScript = await generateScript(prompt, duration, language);
+  }
 
   try {
     let operation = await ai.models.generateVideos({
@@ -164,39 +252,25 @@ export const generateVideo = async (
     }
 
     const videoBlob = await response.blob();
+    let audioBlob: Blob | undefined;
+    let vttContent: string | undefined;
     
-    if (voice !== 'none') {
-        const narration = await generateNarration(prompt, duration, voice, language, onProgress);
+    if (voice !== 'none' && finalScript) {
+        const narration = await generateNarrationFromScript(finalScript, duration, voice, language, onProgress);
         audioBlob = narration.audioBlob;
         vttContent = narration.vttContent;
     }
     
     onProgress('Video generation successful!');
-    return { videoBlob, audioBlob, vttContent, isFallback: false };
+    return { videoBlob, audioBlob, vttContent, isFallback: false, isStitched: false };
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
 
     if (errorMessage.toLowerCase().includes('quota') || errorMessage.toLowerCase().includes('billing')) {
-        onProgress('Quota limit reached. Searching for stock footage...');
-        
-        const stockVideoUrl = await findStockVideo(prompt, apiKeys.pexelsApiKey, apiKeys.pixabayApiKey);
-
-        if (voice !== 'none') {
-            const narration = await generateNarration(prompt, duration, voice, language, onProgress);
-            audioBlob = narration.audioBlob;
-            vttContent = narration.vttContent;
-        }
-
-        const videoUrlToFetch = stockVideoUrl || 'https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4';
-        onProgress(stockVideoUrl ? 'Fetching footage from Pexels/Pixabay...' : 'Fetching generic fallback...');
-        
-        const response = await fetch(videoUrlToFetch);
-        if (!response.ok) throw new Error(`Failed to load fallback video from ${videoUrlToFetch}.`);
-        const videoBlob = await response.blob();
-
-        onProgress('Fallback video compiled successfully!');
-        return { videoBlob, audioBlob, vttContent, isFallback: true };
+        onProgress('Primary generation failed. Creating enhanced fallback...');
+        if (!finalScript) throw new Error("Cannot generate fallback without a script.");
+        return await generateMultiClipFallback(finalScript, duration, voice, language, apiKeys, onProgress);
     }
 
     if (errorMessage.includes('Requested entity was not found')) {

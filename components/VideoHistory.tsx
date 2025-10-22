@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { Search, Trash2, Youtube, Download, Share2, FileAudio, Subtitles } from 'lucide-react';
+import { Search, Trash2, Youtube, Download, Share2, FileAudio, Subtitles, Film } from 'lucide-react';
 import type { HistoryItem, AspectRatio, SubtitleSettings } from '../types';
 import { formatDuration } from '../utils/helpers';
+import { MultiClipPlayer } from './MultiClipPlayer';
 
 interface VideoHistoryProps {
   history: HistoryItem[];
@@ -28,16 +29,7 @@ const getAspectRatioStyles = (aspectRatio: AspectRatio): React.CSSProperties => 
 };
 
 const VideoCard: React.FC<{ item: HistoryItem; onDelete: (id: string) => void; subtitleSettings: SubtitleSettings; }> = ({ item, onDelete, subtitleSettings }) => {
-    const videoRef = useRef<HTMLVideoElement>(null);
-    const audioRef = useRef<HTMLAudioElement>(null);
-
-    useEffect(() => {
-        const video = videoRef.current;
-        if (video && video.textTracks && video.textTracks.length > 0) {
-            video.textTracks[0].mode = subtitleSettings.enabled ? 'showing' : 'hidden';
-        }
-    }, [subtitleSettings.enabled, item.vttUrl]);
-
+    
     const handleShare = async () => {
         const shareData = {
             title: 'AI Generated Video',
@@ -60,46 +52,36 @@ const VideoCard: React.FC<{ item: HistoryItem; onDelete: (id: string) => void; s
         }
     };
 
-    const syncPlay = () => audioRef.current?.play().catch(e => console.error("Audio play failed", e));
-    const syncPause = () => audioRef.current?.pause();
-    const syncSeek = () => {
-        if (videoRef.current && audioRef.current) {
-            const diff = Math.abs(videoRef.current.currentTime - audioRef.current.currentTime);
-            if (diff > 0.3) {
-                audioRef.current.currentTime = videoRef.current.currentTime;
-            }
-        }
-    };
+    const isStitched = item.isStitched && item.videoUrls && item.videoUrls.length > 0;
 
     return (
         <div className="bg-gray-800 rounded-lg overflow-hidden border border-gray-700 transition-transform hover:scale-105 duration-300 flex flex-col">
             <div style={getAspectRatioStyles(item.aspectRatio)} className="relative w-full bg-black">
-                <video
-                    ref={videoRef}
-                    src={item.videoUrl}
-                    className="absolute top-0 left-0 w-full h-full object-cover"
-                    controls
-                    muted={!!item.audioUrl}
-                    loop
-                    playsInline
-                    onPlay={item.audioUrl ? syncPlay : undefined}
-                    onPause={item.audioUrl ? syncPause : undefined}
-                    onTimeUpdate={item.audioUrl ? syncSeek : undefined}
-                    crossOrigin="anonymous"
-                    onLoadedMetadata={() => {
-                        if (videoRef.current && videoRef.current.textTracks.length > 0) {
-                            videoRef.current.textTracks[0].mode = subtitleSettings.enabled ? 'showing' : 'hidden';
-                        }
-                    }}
-                >
-                    {item.vttUrl && (
-                        <track kind="subtitles" src={item.vttUrl} srcLang="en" label="English" />
-                    )}
-                </video>
-                {item.audioUrl && <audio ref={audioRef} src={item.audioUrl} />}
+                {isStitched ? (
+                    <MultiClipPlayer 
+                        videoUrls={item.videoUrls!} 
+                        audioUrl={item.audioUrl} 
+                        vttUrl={item.vttUrl}
+                        subtitleSettings={subtitleSettings}
+                    />
+                ) : (
+                    <video
+                        src={item.videoUrl}
+                        className="absolute top-0 left-0 w-full h-full object-cover"
+                        controls
+                        muted={!!item.audioUrl}
+                        loop
+                        playsInline
+                        crossOrigin="anonymous"
+                    >
+                        {item.vttUrl && (
+                            <track kind="subtitles" src={item.vttUrl} srcLang="en" label="English" default={subtitleSettings.enabled}/>
+                        )}
+                    </video>
+                )}
                 {item.isFallback && (
                     <div className="absolute top-2 left-2 bg-secondary text-white text-xs font-bold px-2 py-1 rounded shadow-lg">
-                        FALLBACK
+                        {isStitched ? 'MULTI-CLIP' : 'FALLBACK'}
                     </div>
                 )}
             </div>
@@ -110,17 +92,26 @@ const VideoCard: React.FC<{ item: HistoryItem; onDelete: (id: string) => void; s
                     <span>{item.aspectRatio}</span>
                     <span>{new Date(item.createdAt).toLocaleDateString()}</span>
                 </div>
-                <div className="flex items-center justify-between pt-2 border-t border-gray-700">
-                    <div className="flex space-x-3">
-                        <a href="https://www.youtube.com/upload" target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-white" title="Upload to YouTube"><SocialIcon platform="YouTube"/></a>
-                        <a href="https://www.tiktok.com/upload" target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-white" title="Upload to TikTok"><SocialIcon platform="TikTok"/></a>
-                        <button onClick={handleShare} className="text-gray-400 hover:text-white" title="Share"><Share2 className="w-6 h-6" /></button>
-                    </div>
-                     <div className="flex space-x-2">
-                        <a href={item.videoUrl} download={`video_${item.id}.mp4`} className="text-gray-400 hover:text-white" title="Download Video"><Download className="w-5 h-5" /></a>
-                        {item.audioUrl && <a href={item.audioUrl} download={`audio_${item.id}.wav`} className="text-gray-400 hover:text-white" title="Download Audio"><FileAudio className="w-5 h-5" /></a>}
-                        {item.vttUrl && <a href={item.vttUrl} download={`subtitles_${item.id}.vtt`} className="text-gray-400 hover:text-white" title="Download Subtitles"><Subtitles className="w-5 h-5" /></a>}
+                 <div className="flex items-center justify-between pt-2 border-t border-gray-700">
+                    <div className="flex items-center space-x-3">
                         <button onClick={() => onDelete(item.id)} className="text-gray-400 hover:text-red-500" title="Delete Video"><Trash2 className="w-5 h-5" /></button>
+                        <button onClick={handleShare} className="text-gray-400 hover:text-white" title="Share"><Share2 className="w-5 h-5" /></button>
+                    </div>
+                     <div className="flex items-center space-x-2 text-gray-400">
+                        {isStitched ? (
+                           <div className="flex items-center space-x-2">
+                                {item.videoUrls?.map((url, i) => (
+                                    <a key={i} href={url} download={`clip_${item.id}_${i+1}.mp4`} className="hover:text-white" title={`Download Clip ${i+1}`}>
+                                        <Film className="w-5 h-5" />
+                                    </a>
+                                ))}
+                           </div>
+                        ) : (
+                           <a href={item.videoUrl} download={`video_${item.id}.mp4`} className="hover:text-white" title="Download Video"><Download className="w-5 h-5" /></a>
+                        )}
+
+                        {item.audioUrl && <a href={item.audioUrl} download={`audio_${item.id}.wav`} className="hover:text-white" title="Download Audio"><FileAudio className="w-5 h-5" /></a>}
+                        {item.vttUrl && <a href={item.vttUrl} download={`subtitles_${item.id}.vtt`} className="hover:text-white" title="Download Subtitles"><Subtitles className="w-5 h-5" /></a>}
                     </div>
                 </div>
             </div>
@@ -143,7 +134,11 @@ export const VideoHistory: React.FC<VideoHistoryProps> = ({ history, setHistory,
       // Also revoke blob URLs to free memory
       const itemToDelete = history.find(item => item.id === id);
       if (itemToDelete) {
-          URL.revokeObjectURL(itemToDelete.videoUrl);
+          if (itemToDelete.videoUrl) URL.revokeObjectURL(itemToDelete.videoUrl);
+          if (itemToDelete.videoUrls) itemToDelete.videoUrls.forEach(url => {
+            // Only revoke if it's a blob URL
+            if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+          });
           if (itemToDelete.audioUrl) URL.revokeObjectURL(itemToDelete.audioUrl);
           if (itemToDelete.vttUrl) URL.revokeObjectURL(itemToDelete.vttUrl);
       }

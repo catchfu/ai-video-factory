@@ -9,7 +9,10 @@ export type GenerationLanguage = 'en' | 'zh';
 export interface HistoryItem {
   id: string;
   prompt: string;
-  videoUrl: string;
+  script?: string;
+  videoUrl?: string;
+  videoUrls?: string[];
+  isStitched?: boolean;
   audioUrl?: string;
   vttUrl?: string;
   isFallback: boolean;
@@ -25,6 +28,7 @@ export interface HistoryItem {
 export interface GenerationTask {
     id: string;
     prompt: string;
+    script: string;
     duration: number;
     aspectRatio: AspectRatio;
     voice: TTSVoice;
@@ -32,7 +36,9 @@ export interface GenerationTask {
     status: 'pending' | 'generating' | 'success' | 'error';
     progressMessage: string;
     result?: {
-        videoUrl: string;
+        videoUrl?: string;
+        videoUrls?: string[];
+        isStitched?: boolean;
         audioUrl?: string;
         vttUrl?: string;
         isFallback: boolean;

@@ -1,7 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Wand2, Upload, Play, SlidersHorizontal, Clock, Ratio as AspectRatioIcon, Mic, RotateCcw, Languages } from 'lucide-react';
-import { generateVideo } from '../services/geminiService';
+// FIX: import useMemo from react to fix 'Cannot find name 'useMemo'' error.
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Wand2, Upload, Play, SlidersHorizontal, Clock, Ratio as AspectRatioIcon, Mic, RotateCcw, Languages, FileText } from 'lucide-react';
+import { generateVideo, generateScript } from '../services/geminiService';
 import { Loader } from './Loader';
+import { MultiClipPlayer } from './MultiClipPlayer';
 import type { AspectRatio, HistoryItem, GenerationTask, TTSVoice, SubtitleSettings, GenerationLanguage, AppSettings } from '../types';
 
 interface VideoGeneratorProps {
@@ -50,73 +52,39 @@ const ALL_VOICE_OPTIONS: { id: TTSVoice, name: string }[] = [
 
 // Component for rendering items in the queue, with an embedded player for successful tasks
 const QueueItem: React.FC<{ task: GenerationTask; subtitleSettings: SubtitleSettings }> = ({ task, subtitleSettings }) => {
-    const videoRef = useRef<HTMLVideoElement>(null);
-    const audioRef = useRef<HTMLAudioElement>(null);
-
-    useEffect(() => {
-        const video = videoRef.current;
-        if (video && video.textTracks && video.textTracks.length > 0) {
-            video.textTracks[0].mode = subtitleSettings.enabled ? 'showing' : 'hidden';
-        }
-    }, [subtitleSettings.enabled, task.result?.vttUrl]);
-
-    // Sync functions for fallback video
-    const syncPlay = () => audioRef.current?.play().catch(e => console.error("Audio play failed", e));
-    const syncPause = () => audioRef.current?.pause();
-    const syncSeek = () => {
-        if (videoRef.current && audioRef.current) {
-            const diff = Math.abs(videoRef.current.currentTime - audioRef.current.currentTime);
-            if (diff > 0.3) { // Only sync if difference is significant
-                audioRef.current.currentTime = videoRef.current.currentTime;
-            }
-        }
-    };
-
-    const handleReplay = () => {
-      if (videoRef.current) {
-        videoRef.current.currentTime = 0;
-        videoRef.current.play();
-      }
-      if (audioRef.current) {
-        audioRef.current.currentTime = 0;
-      }
-    };
-
+    
     if (task.status === 'success' && task.result) {
+        const isStitched = task.result.isStitched && task.result.videoUrls && task.result.videoUrls.length > 0;
+        
         return (
             <div className="bg-gray-800 p-4 rounded-md space-y-3 border border-green-500/50">
                 <p className="text-white font-semibold truncate" title={task.prompt}>{task.prompt}</p>
-                <div style={getAspectRatioStyles(task.aspectRatio)} className="relative w-full bg-black rounded-md overflow-hidden">
-                    <video
-                        ref={videoRef}
-                        src={task.result.videoUrl}
-                        className="absolute top-0 left-0 w-full h-full object-cover bg-black"
-                        controls
-                        muted={!!task.result.audioUrl}
-                        loop
-                        playsInline
-                        onPlay={task.result.audioUrl ? syncPlay : undefined}
-                        onPause={task.result.audioUrl ? syncPause : undefined}
-                        onTimeUpdate={task.result.audioUrl ? syncSeek : undefined}
-                        crossOrigin="anonymous"
-                        onLoadedMetadata={() => {
-                            if (videoRef.current && videoRef.current.textTracks.length > 0) {
-                                videoRef.current.textTracks[0].mode = subtitleSettings.enabled ? 'showing' : 'hidden';
-                            }
-                        }}
-                    >
-                        {task.result.vttUrl && (
-                            <track kind="subtitles" src={task.result.vttUrl} srcLang={task.language} label="Subtitles" />
-                        )}
-                    </video>
-                    {task.result.audioUrl && <audio ref={audioRef} src={task.result.audioUrl} />}
-                </div>
+                 <div style={getAspectRatioStyles(task.aspectRatio)} className="relative w-full bg-black rounded-md overflow-hidden">
+                    {isStitched ? (
+                        <MultiClipPlayer 
+                            videoUrls={task.result.videoUrls!} 
+                            audioUrl={task.result.audioUrl} 
+                            vttUrl={task.result.vttUrl}
+                            subtitleSettings={subtitleSettings}
+                        />
+                    ) : (
+                         <video
+                            src={task.result.videoUrl}
+                            className="absolute top-0 left-0 w-full h-full object-cover bg-black"
+                            controls
+                            muted={!!task.result.audioUrl}
+                            loop
+                            playsInline
+                            crossOrigin="anonymous"
+                        >
+                            {task.result.vttUrl && (
+                                <track kind="subtitles" src={task.result.vttUrl} srcLang={task.language} label="Subtitles" default={subtitleSettings.enabled}/>
+                            )}
+                        </video>
+                    )}
+                 </div>
                  <div className="flex justify-between items-center">
                     <p className="text-sm text-green-400 font-medium">Generation complete!</p>
-                    <button onClick={handleReplay} className="flex items-center text-gray-300 hover:text-white transition-colors text-sm" title="Replay video">
-                        <RotateCcw className="w-4 h-4 mr-1" />
-                        Replay
-                    </button>
                  </div>
             </div>
         );
@@ -142,43 +110,18 @@ const QueueItem: React.FC<{ task: GenerationTask; subtitleSettings: SubtitleSett
 export const VideoGenerator: React.FC<VideoGeneratorProps> = ({ addVideoToHistory, settings }) => {
   const [tasks, setTasks] = useState<GenerationTask[]>([]);
   const [prompt, setPrompt] = useState('');
+  const [script, setScript] = useState('');
+  const [isGeneratingScript, setIsGeneratingScript] = useState(false);
+  const [scriptError, setScriptError] = useState('');
   const [duration, setDuration] = useState(15);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
   const [voiceName, setVoiceName] = useState<string>(ALL_VOICE_OPTIONS[0].name);
   const [language, setLanguage] = useState<GenerationLanguage>('en');
 
   const [previewTask, setPreviewTask] = useState<GenerationTask | null>(null);
-  const previewVideoRef = useRef<HTMLVideoElement>(null);
-  const previewAudioRef = useRef<HTMLAudioElement>(null);
-
-  useEffect(() => {
-    const video = previewVideoRef.current;
-    if (video && video.textTracks && video.textTracks.length > 0) {
-        video.textTracks[0].mode = settings.subtitles.enabled ? 'showing' : 'hidden';
-    }
-  }, [settings.subtitles.enabled, previewTask]);
-
-  const syncPlayPreview = () => previewAudioRef.current?.play().catch(e => console.error("Audio play failed", e));
-  const syncPausePreview = () => previewAudioRef.current?.pause();
-  const syncSeekPreview = () => {
-    if (previewVideoRef.current && previewAudioRef.current) {
-        const diff = Math.abs(previewVideoRef.current.currentTime - previewAudioRef.current.currentTime);
-        if (diff > 0.3) {
-            previewAudioRef.current.currentTime = previewVideoRef.current.currentTime;
-        }
-    }
-  };
-
-  const handleReplayPreview = () => {
-    if (previewVideoRef.current) {
-        previewVideoRef.current.currentTime = 0;
-        previewVideoRef.current.play();
-    }
-    if (previewAudioRef.current) {
-        previewAudioRef.current.currentTime = 0;
-    }
-  };
-
+  
+  const selectedVoiceId = useMemo(() => ALL_VOICE_OPTIONS.find(v => v.name === voiceName)?.id || 'none', [voiceName]);
+  const isVoiceSelected = selectedVoiceId !== 'none';
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -190,10 +133,12 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({ addVideoToHistor
           const newTasks = results.data.map(row => ({
             id: crypto.randomUUID(),
             prompt: row.prompt,
+            script: '', // Batch tasks generate script on the fly
             duration: parseInt(row.duration || '15', 10),
             aspectRatio: (row.aspectRatio as AspectRatio) || '9:16',
             voice: (ALL_VOICE_OPTIONS.find(v => v.id === row.voice) ? row.voice as TTSVoice : 'Kore'),
-            language: (row.language === 'zh' ? 'zh' : 'en'),
+            // FIX: Cast the language to GenerationLanguage to satisfy TypeScript's strict type checking.
+            language: (row.language === 'zh' ? 'zh' : 'en') as GenerationLanguage,
             status: 'pending' as const,
             progressMessage: 'Waiting in queue...',
           }));
@@ -208,8 +153,9 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({ addVideoToHistor
     setPreviewTask(null); // Clear previous preview
 
     try {
-        const { videoBlob, audioBlob, vttContent, isFallback } = await generateVideo(
-            task.prompt, 
+        const resultData = await generateVideo(
+            task.prompt,
+            task.script,
             task.duration, 
             task.aspectRatio, 
             task.voice,
@@ -219,24 +165,34 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({ addVideoToHistor
                 setTasks(currentTasks => currentTasks.map(t => t.id === task.id ? { ...t, progressMessage } : t));
             }
         );
+        
+        const videoUrl = resultData.videoBlob ? URL.createObjectURL(resultData.videoBlob) : undefined;
+        const audioUrl = resultData.audioBlob ? URL.createObjectURL(resultData.audioBlob) : undefined;
+        const vttUrl = resultData.vttContent ? URL.createObjectURL(new Blob([resultData.vttContent], { type: 'text/vtt' })) : undefined;
 
-        const videoUrl = URL.createObjectURL(videoBlob);
-        const audioUrl = audioBlob ? URL.createObjectURL(audioBlob) : undefined;
-        const vttUrl = vttContent ? URL.createObjectURL(new Blob([vttContent], { type: 'text/vtt' })) : undefined;
+        const result = {
+            videoUrl,
+            audioUrl,
+            vttUrl,
+            videoUrls: resultData.videoUrls,
+            isStitched: resultData.isStitched,
+            isFallback: resultData.isFallback,
+        };
 
-        const result = { videoUrl, audioUrl, vttUrl, isFallback };
         const successfulTask = { ...task, status: 'success' as const, result };
-
         setTasks(currentTasks => currentTasks.map(t => t.id === task.id ? successfulTask : t));
         setPreviewTask(successfulTask);
 
         const historyItem: HistoryItem = {
             id: task.id,
             prompt: task.prompt,
+            script: task.script,
             videoUrl,
+            videoUrls: resultData.videoUrls,
+            isStitched: resultData.isStitched,
             audioUrl,
             vttUrl,
-            isFallback,
+            isFallback: resultData.isFallback,
             createdAt: new Date().toISOString(),
             duration: task.duration,
             aspectRatio: task.aspectRatio,
@@ -252,15 +208,35 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({ addVideoToHistor
     }
   };
 
+  const handleGenerateScript = async () => {
+    if (!prompt.trim()) {
+        setScriptError('Please enter a prompt first.');
+        return;
+    }
+    setIsGeneratingScript(true);
+    setScriptError('');
+    setScript('');
+    try {
+        const generatedScript = await generateScript(prompt, duration, language);
+        setScript(generatedScript);
+    } catch (error) {
+        console.error('Script generation failed:', error);
+        const message = error instanceof Error ? error.message : 'Failed to generate script.';
+        setScriptError(message);
+    } finally {
+        setIsGeneratingScript(false);
+    }
+  };
+
   const handleGenerate = () => {
     if (!prompt.trim()) return;
-    const selectedVoice = ALL_VOICE_OPTIONS.find(v => v.name === voiceName) || ALL_VOICE_OPTIONS[0];
     const newTask: GenerationTask = {
       id: crypto.randomUUID(),
       prompt,
+      script: isVoiceSelected ? script : '',
       duration,
       aspectRatio,
-      voice: selectedVoice.id,
+      voice: selectedVoiceId,
       language,
       status: 'pending',
       progressMessage: 'Waiting in queue...',
@@ -268,6 +244,7 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({ addVideoToHistor
     setTasks(prev => [newTask, ...prev]);
     processTask(newTask);
     setPrompt('');
+    setScript('');
   };
 
   const handleProcessQueue = () => {
@@ -287,6 +264,30 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({ addVideoToHistor
             className="w-full p-3 bg-gray-800 border border-gray-600 rounded-md focus:ring-2 focus:ring-primary focus:border-primary transition duration-200 resize-none"
             rows={4}
           />
+          
+           {isVoiceSelected && (
+                <div className="border-t border-b border-gray-700 py-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                        <h3 className="text-lg font-semibold text-on-surface">Voiceover Script</h3>
+                        <button onClick={handleGenerateScript} disabled={isGeneratingScript || !prompt.trim()} className="flex items-center text-sm bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-3 rounded-md transition duration-300 disabled:bg-gray-800 disabled:text-gray-500">
+                             {isGeneratingScript ? <Loader /> : <FileText className="w-4 h-4 mr-2"/>}
+                             {script ? 'Regenerate Script' : 'Generate Script'}
+                        </button>
+                    </div>
+                     {scriptError && <p className="text-red-400 text-sm">{scriptError}</p>}
+                    {(isGeneratingScript || script) && (
+                        <textarea
+                            value={script}
+                            onChange={(e) => setScript(e.target.value)}
+                            placeholder="Your generated script will appear here. You can edit it before generating the video."
+                            className="w-full p-3 bg-gray-800 border border-gray-600 rounded-md focus:ring-2 focus:ring-primary focus:border-primary transition duration-200 resize-none"
+                            rows={6}
+                            disabled={isGeneratingScript}
+                        />
+                    )}
+                </div>
+           )}
+
           <div className="grid md:grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-400 mb-2 flex items-center"><Clock className="mr-2 h-4 w-4" /> Duration (seconds)</label>
@@ -347,7 +348,7 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({ addVideoToHistor
               </select>
             </div>
           </div>
-          <button onClick={handleGenerate} disabled={tasks.some(t => t.status === 'generating')} className="w-full flex justify-center items-center bg-primary hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-md transition duration-300 disabled:bg-gray-500 disabled:cursor-not-allowed">
+          <button onClick={handleGenerate} disabled={tasks.some(t => t.status === 'generating') || (isVoiceSelected && !script.trim())} className="w-full flex justify-center items-center bg-primary hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-md transition duration-300 disabled:bg-gray-500 disabled:cursor-not-allowed">
             <Wand2 className="mr-2" /> Generate Video
           </button>
           
@@ -356,36 +357,31 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({ addVideoToHistor
               <h3 className="text-xl font-bold mb-4 text-center">Video Preview</h3>
               <div className="max-w-md mx-auto">
                   <div style={getAspectRatioStyles(previewTask.aspectRatio)} className="relative w-full bg-black rounded-lg overflow-hidden shadow-2xl">
-                      <video
-                          ref={previewVideoRef}
-                          src={previewTask.result.videoUrl}
-                          className="absolute top-0 left-0 w-full h-full object-cover bg-black"
-                          controls
-                          muted={!!previewTask.result.audioUrl}
-                          loop
-                          playsInline
-                          onPlay={previewTask.result.audioUrl ? syncPlayPreview : undefined}
-                          onPause={previewTask.result.audioUrl ? syncPausePreview : undefined}
-                          onTimeUpdate={previewTask.result.audioUrl ? syncSeekPreview : undefined}
-                          crossOrigin="anonymous"
-                          onLoadedMetadata={() => {
-                              if (previewVideoRef.current && previewVideoRef.current.textTracks.length > 0) {
-                                  previewVideoRef.current.textTracks[0].mode = settings.subtitles.enabled ? 'showing' : 'hidden';
-                              }
-                          }}
-                      >
-                          {previewTask.result.vttUrl && (
-                              <track kind="subtitles" src={previewTask.result.vttUrl} srcLang={previewTask.language} label="Subtitles" />
-                          )}
-                      </video>
-                      {previewTask.result.audioUrl && <audio ref={previewAudioRef} src={previewTask.result.audioUrl} />}
+                     {(previewTask.result.isStitched && previewTask.result.videoUrls) ? (
+                        <MultiClipPlayer 
+                            videoUrls={previewTask.result.videoUrls} 
+                            audioUrl={previewTask.result.audioUrl} 
+                            vttUrl={previewTask.result.vttUrl}
+                            subtitleSettings={settings.subtitles}
+                        />
+                     ) : (
+                        <video
+                            src={previewTask.result.videoUrl}
+                            className="absolute top-0 left-0 w-full h-full object-cover bg-black"
+                            controls
+                            muted={!!previewTask.result.audioUrl}
+                            loop
+                            playsInline
+                            crossOrigin="anonymous"
+                        >
+                            {previewTask.result.vttUrl && (
+                                <track kind="subtitles" src={previewTask.result.vttUrl} srcLang={previewTask.language} label="Subtitles" default={settings.subtitles.enabled}/>
+                            )}
+                        </video>
+                     )}
                   </div>
                   <div className="flex justify-center items-center mt-4">
                       <p className="text-sm text-green-400 font-medium mr-4">Generation complete!</p>
-                      <button onClick={handleReplayPreview} className="flex items-center text-gray-300 hover:text-white transition-colors text-sm" title="Replay video">
-                          <RotateCcw className="w-4 h-4 mr-1" />
-                          Replay
-                      </button>
                   </div>
               </div>
             </div>
